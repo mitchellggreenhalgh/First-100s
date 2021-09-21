@@ -1,0 +1,739 @@
+---
+title: "Rapid Bioassessment Simulations"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+# message, error, warning
+library(tidyverse)
+
+knitr::opts_knit$set(message = FALSE,
+                     error = FALSE, 
+                     warning = FALSE, 
+                     fig.align = 'center')
+```
+
+
+```{r Simulation Function}
+siteFxn <- function(data, replicates, size, simulations, site, simExtra = "_all"){
+  
+  # FUNCTION VARIABLES ##########
+  
+  # data = dataframe with cols taxID = detailed taxa & allSites = Count at site(s)/site subsamples
+  # replicates = how many replicates - also 1:x in loop 
+  # size =  Max sample size sample size (increments of 50)
+  # simulations = how many different simulations of richness curves
+  # site = camel-case string of site
+  # simExtra = string (starting with an underscore) giving more info on the simulations
+  
+  
+  # DATA SETUP ##########
+  
+  # Make Vector with all site's taxa informatiom
+  dataAllVec <- NULL
+  
+  for (i in 1:nrow(data)) {
+    dataAllVec <- append(x = dataAllVec, 
+                         values = rep.int(x = data$taxID[i], 
+                                          times = data$allSites[i]))
+  }
+  
+  
+  # LOOPS ##########
+  
+  # TODO make an option other loop for different sample sizes? (done temporarily later during the actual data crunching/calling the main function)
+  
+  # All Simulations Loop: Description
+  # Does multiple simulations of same sample size richness curves
+  
+  # All Simulations Loop: Set Seeds
+  # Allows for duplication/replication for multiple sample sizes later on
+  seeds <- seq(from = 69420, to = 80085, length.out = simulations)
+  
+  # All Simulations Loop: Dummy Variables
+  allSimsRich <- NULL
+  allMetrics <- NULL
+  
+  # All Simulations Loop: THE LOOP UwU
+  for(sims in 1:simulations){
+    
+    # Set seed for each simulation
+    set.seed(seeds[sims])
+    
+    ###
+    
+    # If there are fewer specimens in a sample/simulation than the sample size, skip
+    if (length(dataAllVec) <= size) {
+      return(paste(simExtra, "is not a valid data set"))
+    }
+    
+    # Replicates Loop: Make dataframe of all replicates
+    dataReps <- as.data.frame(
+      cbind(
+        replicate(
+          sample(dataAllVec, size, replace = FALSE),
+          n = replicates)
+      )
+    )
+    
+    # Replicates Loop: 
+    # j in 1:replicates
+    
+    # Replicates Loop: Dummy variables and true variables
+    dataMetrics <- NULL
+    dataDummy <- NULL
+    dataRich <- data.frame(richness = numeric(replicates),
+                           sample = numeric(replicates),
+                           cumRichness = numeric(replicates),
+                           sampleSize = numeric(replicates),
+                           simNum = numeric(replicates))
+    
+    # REPLICATES LOOP
+    for(j in 1:replicates){
+      
+      # Get sample relative abundance, counts, and label it
+      dataDummy <- dataReps %>% 
+        group_by(taxa = dataReps[,j]) %>% 
+        summarise(n = n()) %>% 
+        mutate(sample = j, 
+               relAbundance = n / sum(n),
+               simNum = sims) %>%
+        ungroup()
+      
+      # Combine all the replicates together
+      dataMetrics <- rbind(dataMetrics, dataDummy)
+      
+      # Get richness and cumulative richness data over replicates and simulations
+      dataRich$richness[j] <- nrow(dataDummy)
+      dataRich$sample[j] <- j
+      dataRich$cumRichness[j] <- length(unique(dataMetrics$taxa))
+      dataRich$sampleSize[j] <- size
+      dataRich$simNum[j] <- sims
+      
+      # END OF REPLICATES LOOP
+    }
+    
+    
+    allSimsRich <- rbind(allSimsRich, dataRich)
+    allMetrics <- rbind(allMetrics, dataMetrics)
+    
+    # END OF SIMULATIONS LOOP
+  }
+  
+  
+  # RESULTS ##########
+  
+  # Send allSims to global environment
+  allSimsRich <- allSimsRich %>%
+    select(simNum, sample, sampleSize, richness, cumRichness)
+  
+  allSimsRich <<- allSimsRich
+  
+    
+  # Send allMetrics to global environment
+  allMetrics <<- allMetrics
+  
+  
+  # Overall relative abundance for all replicates (and send to global environment)
+  allMetrics_sampleAbund <- allMetrics %>%
+    group_by(simNum, sample, taxa) %>%
+    summarise(n = sum(n)) %>%
+    mutate(sampleAbund = n / sum(n)) %>%
+    ungroup()
+  
+  allMetrics_simAbund <- allMetrics %>%
+    group_by(simNum, taxa) %>%
+    summarise(n = sum(n)) %>%
+    mutate(simAbund = n / sum(n)) %>%
+    ungroup()
+  
+  allMetrics_sampleAbund <<- allMetrics_sampleAbund
+  allMetrics_simAbund <<- allMetrics_simAbund
+  
+  
+  # Simulation Means 
+      # TODO add confidence intervals
+  
+      # Get original data max info
+  dataMaxRich <- length(unique(dataAllVec))
+  dataRealAbund <- data %>%
+    group_by(taxID) %>%
+    summarise(allAbund = allSites / sum(data$allSites))
+  
+      # Mean Richness per Sample
+  simRichMeans <- allSimsRich %>%
+    group_by(sample) %>%
+    summarise(meanRich = mean(richness),  # Mean Richness score for each sample in all simulations
+              meanCumRich = mean(cumRichness),  # Mean Cum Richness score for all simulations
+              maxCumRich = dataMaxRich,  # Max total richness in dataset
+              meanRich_PercMax = meanRich / maxCumRich,  # Percent of max richness found in each sample
+              meanCumRich_PercMax = meanCumRich / maxCumRich)  # Percent of max richness reached
+  
+  simRichMeans <<- simRichMeans
+  
+      # Mean Abundance per Sample
+  simAbundMeansJoin <- allMetrics_sampleAbund %>%
+    left_join(dataRealAbund, by = c("taxa" = "taxID")) 
+  
+  simAbundMeansJoin <<- simAbundMeansJoin
+  
+  simAbundMeans <- simAbundMeansJoin %>%
+    group_by(taxa) %>%
+    summarise(meanSamAbund = mean(sampleAbund),
+              allAbund = mean(allAbund)) %>%
+    mutate(residuals = meanSamAbund - allAbund,
+           logResiduals = log(residuals),
+           percDiff = ((meanSamAbund - allAbund) / allAbund) * 100,
+           logPercDiff = log(percDiff)) %>%
+    ungroup()
+  
+  simAbundMeans <<- simAbundMeans
+  
+  
+  # GRAPHs ##########
+  
+  # Plot Themes
+  plotTheme <- theme() + 
+    theme_bw()
+  
+  # allSimsRich: sample abundance vs cumulative abundance 
+  allRichPlot <- ggplot(allSimsRich) + 
+    geom_line(aes(x = sample, y = cumRichness, 
+                  color = sampleSize,
+                  group = as.factor(simNum)), 
+              color = "blue", 
+              size = 1) + 
+    geom_point(aes(x = sample, y = richness), 
+               color = "darkgreen", 
+               size = 2) + 
+    labs(x = "Number of Samples Taken",
+         y = "Species Richness",
+         title = paste0("Species Richness Curve Simulations (Sample Size = ", size, ")")) + 
+    scale_x_continuous(lim = c(1, replicates),
+                       breaks = seq(from = 1, to = replicates, by = 1),
+                       minor_breaks = seq(from = 1, to = replicates, by = 1)) + 
+    plotTheme
+  print(allRichPlot)
+  
+  
+  # simRichMeans: Mean sample abundance vs mean cum abundance and max abundance
+  simRichMeansPlot <- ggplot(simRichMeans) + 
+    geom_line(aes(x = sample, y = maxCumRich,
+                  color = "Maximum Cumulative Richness"),
+              color = "darkgreen",
+              size = 2) + 
+    geom_line(aes(x = sample, y = meanCumRich,
+                  color = "Mean Cumulative Richness"),
+              color = "navy",
+              size = 2) + 
+    geom_point(aes(x = sample, y = meanRich),
+               size = 2) + 
+    scale_x_continuous(lim = c(1, replicates),
+                       breaks = seq(from = 1, to = replicates, by = 1),
+                       minor_breaks = seq(from = 1, to = replicates, by = 1)) + 
+    plotTheme + 
+    labs(x = "Number of Samples Taken",
+         y = "Species Richness",
+         title = paste0("Mean Species Richness Curve Simulations (Sample Size = ", size, ")"))
+  
+  print(simRichMeansPlot)
+  
+  
+  # simAbundMeans: Mean simulation abundance vs real data
+  simAbundMeansPlot <- ggplot(simAbundMeans) + 
+    geom_abline(slope = 1,
+                color = "red",
+                alpha = 0.5) + 
+    geom_point(aes(x = allAbund , y = meanSamAbund)) + 
+    plotTheme +
+    theme(aspect.ratio = 1) + 
+    labs(title = paste0("Data Abundance vs Simulation Abundance \n(Sample Size = ", size, ")"),
+         x = "Data Relative Abundance",
+         y = "Simulation Relative Abundance")
+  print(simAbundMeansPlot)
+  
+  
+  # simAbundMeans: Looking at percent difference in abundance estimations
+  abundMeans_percDiff <- ggplot(simAbundMeans) + 
+    geom_histogram(aes(x = percDiff),
+                   bins = 19) + 
+    labs(title = paste0("Distribution of Percentage Difference \nbetween Simulation and Data Abundance \n(Sample Size = ", 
+                        size, 
+                        "; N = ", 
+                        dataMaxRich, 
+                        ")"),
+         y = "Frequency")
+  print(abundMeans_percDiff)
+  
+  abundMeans_lnPercDiff <- ggplot(simAbundMeans) + 
+    geom_histogram(aes(x = logPercDiff),
+                   bins = 19) + 
+    labs(title = paste0("Distribution of ln() Percentage Difference \nbetween Simulation and Data Abundance \n(Sample Size = ", 
+                        size, 
+                        "; N = ", 
+                        dataMaxRich, 
+                        ")"),
+         y = "Frequency")
+  print(abundMeans_lnPercDiff)
+  
+  
+  # allMetrics: allMetrics_sampleAbund and allMetrics_simAbund abundances
+  
+  # TODO Need to group by order/higher, just do EPT, do main 12-13 then add 'other', etc.
+  
+  # All Samples in all Simulations
+  # sampleAbundPlot <- ggplot(allMetrics_sampleAbund) + 
+  #   geom_col(aes(x = reorder(as.factor(taxa), -sampleAbund), 
+  #                y = sampleAbund), # Reorder from greatest abundance to least
+  #            fill = "blue") + 
+  #   facet_grid(simNum ~ sample)
+  # print(sampleAbundPlot)
+  
+  
+  # Repeat for general abundance of all simulations
+  
+  
+  # Exporting Tables ##########
+  
+  write.csv(allSimsRich,
+            row.names = FALSE,
+            na = "",
+            file = paste0(site,
+                          "/tables/",
+                          site,
+                          simExtra,
+                          "_Richness_sampleSize",
+                          size,
+                          "_replicates",
+                          replicates,
+                          "_simulations",
+                          simulations,
+                          "_",
+                          Sys.Date(),
+                          ".csv"))
+  
+  write.csv(allMetrics_sampleAbund,
+            row.names = FALSE,
+            na = "",
+            file = paste0(site,
+                          "/tables/",
+                          site,
+                          simExtra,
+                          "_sampleAbundance_sampleSize",
+                          size,
+                          "_replicates",
+                          replicates,
+                          "_simulations",
+                          simulations,
+                          "_",
+                          Sys.Date(),
+                          ".csv"))
+  
+  write.csv(allMetrics_simAbund,
+            row.names = FALSE,
+            na = "",
+            file = paste0(site,
+                          "/tables/",
+                          site,
+                          simExtra,
+                          "_simulationAbundance_sampleSize",
+                          size,
+                          "_replicates",
+                          replicates,
+                          "_simulations",
+                          simulations,
+                          "_",
+                          Sys.Date(),
+                          ".csv"))
+  
+  write.csv(simRichMeans,
+            row.names = FALSE,
+            na = "",
+            file = paste0(site,
+                          "/tables/",
+                          site,
+                          simExtra,
+                          "_simulationRichnessMeans_sampleSize",
+                          size,
+                          "_replicates",
+                          replicates,
+                          "_simulations",
+                          simulations,
+                          "_",
+                          Sys.Date(),
+                          ".csv"))
+  
+    write.csv(simAbundMeans,
+            row.names = FALSE,
+            na = "",
+            file = paste0(site,
+                          "/tables/",
+                          site,
+                          simExtra,
+                          "_simulationAbundanceMeans_sampleSize",
+                          size,
+                          "_replicates",
+                          replicates,
+                          "_simulations",
+                          simulations,
+                          "_",
+                          Sys.Date(),
+                          ".csv"))
+  
+    
+  # Exporting Plots ##########
+  
+  # Richness Plot(s)
+  ggsave(plot = allRichPlot,
+         filename = paste0(site,
+                           "/plots/",
+                           site,
+                           simExtra,
+                           "_simRichness_sampleSize",
+                           size,
+                           "_replicates",
+                           replicates,
+                           "_simulations",
+                           simulations,
+                           "_",
+                           Sys.Date(),
+                           ".pdf"))
+  
+  ggsave(plot = simRichMeansPlot,
+         filename = paste0(site,
+                           "/plots/",
+                           site,
+                           simExtra,
+                           "_simRichnessMeans_sampleSize",
+                           size,
+                           "_replicates",
+                           replicates,
+                           "_simulations",
+                           simulations,
+                           "_",
+                           Sys.Date(),
+                           ".pdf"))
+  
+  # Abundance Plot(s)
+    ggsave(plot = simAbundMeansPlot,
+         filename = paste0(site,
+                           "/plots/",
+                           site,
+                           simExtra,
+                           "_simAbundMeans_sampleSize",
+                           size,
+                           "_replicates",
+                           replicates,
+                           "_simulations",
+                           simulations,
+                           "_",
+                           Sys.Date(),
+                           ".pdf"))
+    
+    ggsave(plot = abundMeans_percDiff,
+           filename = paste0(site,
+                             "/plots/",
+                             site,
+                             simExtra,
+                             "_simAbundPercentDiff_sampleSize",
+                             size,
+                             "_replicates",
+                             replicates,
+                             "_simulations",
+                             simulations,
+                             "_",
+                             Sys.Date(),
+                             ".pdf"))
+    
+    ggsave(plot = abundMeans_lnPercDiff,
+           filename = paste0(site,
+                             "/plots/",
+                             site,
+                             simExtra,
+                             "_simLnAbundPercentDiff_sampleSize",
+                             size,
+                             "_replicates",
+                             replicates,
+                             "_simulations",
+                             simulations,
+                             "_",
+                             Sys.Date(),
+                             ".pdf"))
+  
+  
+  
+  # FINISHED (if running function on multiple datasets in a loop, move to loop) ####
+  # if (Sys.getenv("USERNAME") == "mitch") {
+  #   shell.exec("C:/Users/mitch/Documents/ClownfishCustomSounds/xfilestheme_short.mp3")
+  #   Sys.sleep(7)
+  #   system("TASKKILL /IM vlc.exe /F")
+  # } else {
+  #   shell.exec("https://youtu.be/ndsaoMFz9J4?t=3")
+  #   Sys.sleep(10)
+  #   system("TASKKILL /IM chrome.exe /F")
+  # }
+  
+}
+
+# Creating new export directories:
+# shell.exec("https://stackoverflow.com/questions/24025629/send-output-file-from-for-loop-to-a-new-directory-in-r")
+```
+
+
+```{r Marys River - Data Cleaning}
+mary <- read.csv("marysRiver/marysRiver_table.csv",
+                 na.strings = "",
+                 skip = 17)
+
+
+# Data Cleaning ######
+    
+# Entire River ####
+# Column with entire taxonomic ID
+mary$taxID <- paste(mary$Phylum, 
+                       mary$Class, 
+                       mary$Order, 
+                       mary$Family, 
+                       mary$SubFamily,
+                       mary$Genus, 
+                       mary$Species)
+
+mary$taxID <- gsub(pattern = " NA",  # Remove " NA" from column
+                   x = mary$taxID, 
+                   replacement = "")
+
+# Column with simplified taxonomic ID
+mary$shortID <- ifelse(mary$Class == "Insecta", 
+                     paste(mary$Order,
+                           mary$Family,
+                           mary$Genus,
+                           mary$Species),
+                     paste(mary$Phylum, 
+                           mary$Class, 
+                           mary$Order, 
+                           mary$Family, 
+                           mary$Genus, 
+                           mary$Species))
+
+mary$shortID <- gsub(pattern = " NA",  # Remove " NA" from column
+                   x = mary$shortID, 
+                   replacement = "")
+
+# Dataframe with all sites and taxa
+maryAll <- mary %>%
+  select(taxID, allSites)
+
+
+# Specific Sites ####
+
+# Site codes that unify each sample from the same site
+marySites <- toupper(c("conners", "chimney", "cutt", "hanks1", "hanks2", 
+                        "marys1", "marys2", "maryspl", "tcrk1", "tcrk2"))
+
+# Function to create dataframes for the analysis function
+marySiteSelection <- function(site) {
+  mary %>%
+    select(-allSites) %>%  # Get rid of old 'allSites' data
+    select(taxID, starts_with(site)) %>%
+    mutate(allSites = rowSums(across(where(is.numeric)))) %>%  # Create new allSites with the right site data
+    select(-starts_with(site))
+}
+
+# Execute function by looping through all site codes
+for (marySite in marySites) {
+  assign(paste0("mary_", marySite),
+         marySiteSelection(marySite))
+}
+
+# Create list of all mary_SITE dataframes
+marySitesData <- mget(ls()[grepl("^mary_", ls())])  # mget() looks for objects with certain names [in this case, objects that start with "mary_"]
+# Each Sample ####
+# Data will be indexed and integrated via FOR LOOP below
+```
+
+
+```{r Marys River Simulations}
+# LOOP HERE FOR DIFFERENT SAMPLE SIZES
+for (sizes in c(50, 100, 200)) {
+  # Aggregated River Data ####
+  siteFxn(data = maryAll,
+          replicates = 30, 
+          size = sizes,
+          simulations = 100,
+          site = "marysRiver")
+  
+  
+  # Aggregated Site Data ####
+  for(marySiteIndex in 1:length(marySitesData)){
+    siteFxn(data = marySitesData[[marySiteIndex]],
+            replicates = 30, 
+            size = sizes,
+            simulations = 100,
+            site = "marysRiver",
+            simExtra = paste0("_", names(marySitesData[marySiteIndex])))
+    
+    print(paste("Site", names(marySitesData[marySiteIndex]), "analysis complete"))
+  }
+  
+  
+  # Individual Sample Data ####
+  marySample <- NULL
+  
+  for(marySampleIndex in 10:71){  # 10:71 are the sample columns
+    marySample <- mary %>%
+      select(taxID, allSites = marySampleIndex) 
+    
+    marySampleName <- mary %>% 
+      select(marySampleIndex) %>%
+      colnames()
+    
+    siteFxn(data = marySample,
+            replicates = 30,
+            size = sizes, 
+            simulations = 100,
+            site = "marysRiver",
+            simExtra = paste0("_sample_", marySampleName))
+    
+    print(paste("Sample", marySampleName, "analysis complete"))
+  }
+}
+
+if (Sys.getenv("USERNAME") == "mitch") {
+  shell.exec("C:/Users/mitch/Documents/ClownfishCustomSounds/xfilestheme_short.mp3")
+  Sys.sleep(7)
+  system("TASKKILL /IM vlc.exe /F")
+} else {
+  shell.exec("https://youtu.be/ndsaoMFz9J4?t=3")
+  Sys.sleep(10)
+  system("TASKKILL /IM chrome.exe /F")
+}
+```
+
+
+```{r Diamond Fork Data Cleaning}
+dfork <- read.csv("diamondFork/Table4_1a.csv",
+                  skip = 6)
+
+# Create Complete Tax ID and eliminate NAs
+dfork$taxID <- paste(dfork$Order,
+                     dfork$Family.Genus.Species)
+
+dfork$taxID <- gsub(pattern = " NA", 
+                   x = dfork$taxID, 
+                   replacement = "")
+
+# Eliminate NAs in count data
+dfork[is.na(dfork)] <- 0
+
+# Dataframe with all sites and taxa
+dforkAll <- dfork %>%
+  select(taxID, allSites)
+
+
+# Specific Sites ####
+
+# Site codes that unify each sample from the same site
+dforkSites <- toupper(c("sxw", "rc", "asyr", "bsyr",
+                       "gs", "amh", "bmh", "dfcg",
+                       "mo", "ox"))
+
+# Function to create dataframes for the analysis function
+dforkSiteSelection <- function(site) {
+  dfork %>%
+    select(-allSites) %>%  # Get rid of old 'allSites' data
+    select(taxID, starts_with(site)) %>%
+    mutate(allSites = rowSums(across(where(is.numeric)),
+                              na.rm = TRUE)) %>%  # Create new allSites with the right site data
+    select(-starts_with(site))
+}
+
+# Execute function by looping through all site codes
+for (dforkSite in dforkSites) {
+  assign(paste0("dfork_", dforkSite),
+         dforkSiteSelection(dforkSite))
+}
+
+# Create list of all dfork_SITE dataframes
+dforkSitesData <- mget(ls()[grepl("^dfork_", ls())])  # mget() looks for objects with certain names [in this case, objects that start with "dfork_"]
+# Each Sample ####
+# Data will be indexed and integrated via FOR LOOP below
+
+
+# Each individual sample is integrated in the simulation loops ####
+```
+
+
+```{r dforks River Simulations}
+# LOOP HERE FOR DIFFERENT SAMPLE SIZES 
+for (sizes in c(50, 100, 200)) {
+  # Aggregated River Data ####
+  siteFxn(data = dforkAll,
+          replicates = 30, 
+          size = sizes,
+          simulations = 100,
+          site = "diamondFork")
+  
+  
+  # Aggregated Site Data ####
+  for(dforkSiteIndex in 1:length(dforkSitesData)){
+    siteFxn(data = dforkSitesData[[dforkSiteIndex]],
+            replicates = 30, 
+            size = sizes,
+            simulations = 100,
+            site = "diamondFork",
+            simExtra = paste0("_", names(dforkSitesData[dforkSiteIndex])))
+    
+    print(paste("Site", names(dforkSitesData[dforkSiteIndex]), "analysis complete"))
+  }
+  
+  
+  # Individual Sample Data ####
+  dforkSample <- NULL
+  
+  for(dforkSampleIndex in 4:43){  # are the sample columns
+    dforkSample <- dfork %>%
+      select(taxID, allSites = dforkSampleIndex) 
+    
+    dforkSampleName <- dfork %>% 
+      select(dforkSampleIndex) %>%
+      colnames()
+    
+    siteFxn(data = dforkSample,
+            replicates = 30,
+            size = sizes, 
+            simulations = 100,
+            site = "diamondFork",
+            simExtra = paste0("_sample_", dforkSampleName))
+    
+    print(paste("Sample", dforkSampleName, "analysis complete"))
+  }
+}
+
+if (Sys.getenv("USERNAME") == "mitch") {
+  shell.exec("C:/Users/mitch/Documents/ClownfishCustomSounds/xfilestheme_short.mp3")
+  Sys.sleep(7)
+  system("TASKKILL /IM vlc.exe /F")
+} else {
+  shell.exec("https://youtu.be/ndsaoMFz9J4?t=3")
+  Sys.sleep(10)
+  system("TASKKILL /IM chrome.exe /F")
+}
+```
+
+```{r Scraps, include = FALSE}
+# Combining same replicates, different sample size into one graph (can be done with loops within function)
+
+# maryFxn(size = 50, replicates = 100)
+# mary_S50R100 <- maryRich
+# maryFxn(size = 100, replicates = 100)
+# mary_S100R100 <- maryRich
+# maryFxn(size = 200, replicates = 100)
+# mary_S200R100 <- maryRich
+# 
+# maryCombined <- rbind(mary_S50R100, mary_S100R100, mary_S200R100)
+# 
+# ggplot(maryCombined) + 
+#   geom_line(aes(x = sample, y = cumRichness, color = as.factor(sampleSize))) + 
+#   geom_point(aes(x = sample, y = richness, shape = as.factor(sampleSize)))
+```
+
